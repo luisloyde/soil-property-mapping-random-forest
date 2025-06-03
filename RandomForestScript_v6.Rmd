@@ -1,0 +1,274 @@
+---
+title: "Mapeo digital de propiedades de suelo mediante Random Forest (Machine Learning)"
+author: "Luis Loyde"
+date: "2025-05-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Modelado y Mapeo de Propiedades de Suelo a partir de Muestreo de Campo y DEM
+
+Este script de R realiza el modelado espacial de propiedades de suelo usando Random Forest, genera mapas continuos raster para cada propiedad y estrato, recorta estos mapas a un límite espacial, produce una visualización tipo grilla con etiquetas personalizadas y agrega estadísticos (medianas) por unidad edafológica. Finalmente, exporta los resultados a formatos vectoriales.
+
+------------------------------------------------------------------------
+
+## **1. Librerías y Configuración**
+
+```{r message=FALSE, warning=FALSE}
+# Limpiar el entorno y cargar librerías necesarias
+rm(list = ls())
+
+library(terra)
+library(sf)
+library(dplyr)
+library(randomForest)
+library(ggplot2)
+library(caret)
+library(viridis)
+library(this.path)
+library(gridExtra)
+
+# Configura el directorio de trabajo al del script
+setwd(this.dir())
+```
+
+------------------------------------------------------------------------
+
+## **2. Cargar y Procesar Datos de Muestreo**
+
+> **IMPORTANTE:**\
+> Cambia `X` y `Y` si en tu CSV usan otros nombres de columna para las coordenadas, así como `crs` de acuerdo con el SRC que utilice.
+
+```{r}
+# Lee el archivo de muestreo con coordenadas X/Y y propiedades de suelo
+datos <- read.csv("muestreo_estandarizado.csv")
+# Cambia el nombre de los campos de coordenadas y el CRS/EPSG si es necesario
+datos_sf <- st_as_sf(datos, coords = c("X", "Y"), crs = 32614)
+```
+
+------------------------------------------------------------------------
+
+## **3. Cargar y Procesar DEM**
+
+> **IMPORTANTE:**\
+> Cambia `EPSG` de acuerdo con DEM, debe tener el mismo que el archivo `muestreo.csv`.
+
+```{r}
+dem <- rast("dem.tif")
+crs(dem) <- "EPSG:32614"
+```
+
+------------------------------------------------------------------------
+
+## **4. Derivar Variables Topográficas**
+
+```{r}
+# Genera la pendiente basada en el DEM
+pendiente <- terrain(dem, v = "slope", unit = "degrees")
+variables_topograficas <- c(dem, pendiente)
+names(variables_topograficas) <- c("altitud", "pendiente")
+
+# Extrae valores de altitud y pendiente para cada punto de muestreo
+valores_extraidos <- extract(variables_topograficas, vect(datos_sf))
+datos <- cbind(datos, valores_extraidos)
+```
+
+------------------------------------------------------------------------
+
+## **5. Definir Variables y Etiquetas**
+
+> **IMPORTANTE:**\
+> Asegúrate que los nombres de las variables del CSV coincidan con los del vector `variables`, en el archivo `muestreo.csv` no se deben tener espacios en los nombres de las columnas, en su lugar se recomienda usar `-` o `_`.
+>
+> La columna `Estrato_cm` incluye el rango de profundidad del estrato con el formato: `0-30 cm` ó `30-60 cm`. Esto se maneja así para que los mapas se etiqueten de forma automática.
+>
+> El vector `etiquetas` incluye las etiquetas que se usarán en los mapas, por ello debe estar en el mismo orden que el vector `variables`.
+
+```{r}
+# Nombres de variables en el CSV
+variables <- c("Profundidad","CC", "PMP", "Arena", "Limo", "Arcilla", "Arenas_finas", "CO", "MO", "Cond_Hidr", "DAP")
+# Etiquetas con nombres reales y unidades
+etiquetas <- c(
+  "Profundidad (cm)",
+  "Capacidad de Campo (%HG)",
+  "Punto de Marchitez Permanente (%HG)",
+  "Arena (%)",
+  "Limo (%)",
+  "Arcilla (%)",
+  "Arenas finas (g)",
+  "Carbono orgánico (%)",
+  "Materia orgánica (%)",
+  "Conductividad hidráulica K (mm/h)",
+  "Densidad Aparente Promedio (g/cm³)"
+)
+names(etiquetas) <- variables
+
+# Extrae los estratos únicos
+estratos <- unique(datos$Estrato_cm)
+```
+
+------------------------------------------------------------------------
+
+## **6. Modelado y Generación de Mapas Raster**
+
+```{r}
+# Guarda los nombres de los archivos generados y etiquetas
+archivos_raster <- list()
+nombres_mapa <- list()
+etiquetas_mapa <- list()
+
+for (var in variables) {
+  cat("Procesando la variable:", var, "\n")
+  for (estrato in estratos) {
+    cat("Procesando el estrato:", estrato, "para la variable:", var, "\n")
+    datos_estrato <- datos %>% filter(Estrato_cm == estrato)
+    datos_estrato <- datos_estrato %>%
+      filter(!is.na(.data[[var]]), !is.na(altitud), !is.na(pendiente))
+    if (nrow(datos_estrato) < 10) {
+      cat("No hay suficientes datos para el estrato", estrato, "y variable", var, "\n")
+      next
+    }
+    set.seed(123)
+    train_index <- createDataPartition(datos_estrato[[var]], p = 0.5, list = FALSE)
+    datos_train <- datos_estrato[train_index, ]
+    datos_test <- datos_estrato[-train_index, ]
+    modelo_rf <- randomForest(as.formula(paste(var, "~ altitud + pendiente")), 
+                              data = datos_train, importance = TRUE)
+    predicciones_test <- predict(modelo_rf, newdata = datos_test)
+    mse <- mean((datos_test[[var]] - predicciones_test)^2)
+    cat("MSE:", mse,"\n")
+    cat("RMSE:", sqrt(mse), "\n")
+    mapa_var <- predict(variables_topograficas, modelo_rf)
+    output_filename <- paste0("mapa_", tolower(var), "_", gsub("-", "_", estrato), ".tif")
+    writeRaster(mapa_var, output_filename, overwrite = TRUE)
+    archivos_raster[[length(archivos_raster) + 1]] <- output_filename
+    nombres_mapa[[length(nombres_mapa) + 1]] <- paste(var, estrato, sep = " - ")
+    etiquetas_mapa[[length(etiquetas_mapa) + 1]] <- paste0(etiquetas[var], "\n", estrato)
+  }
+}
+```
+
+> **TIP:**\
+> Se puede modificar el valor de `p` esto indica la proporción de datos que se destinan a entrenamiento.
+>
+> El código mostrará el progreso y las métricas del modelo para cada estrato y variable
+>
+> -   `MSE` (Error Cuadrático Medio): mide el promedio de los errores al cuadrado; penaliza más los errores grandes.
+>
+> -   `RMSE` (Raíz del MSE): muestra el error promedio en las mismas unidades que los datos; es más fácil de interpretar.
+
+------------------------------------------------------------------------
+
+## **7. Recorte de Mapas al Límite**
+
+> **IMPORTANTE:**\
+> El Shapefile `limite.shp` debe tener el mismo CRS que el raster y los puntos de muestreo,
+
+```{r}
+# Lee el archivo con el límite del área de estudio
+limite <- st_read("limite.shp")
+limite_sf <- vect(limite)
+
+# Corta los archivos ráster generados al límite y los guarda con un sufijo _clip
+archivos_raster_clip <- list()
+for (i in seq_along(archivos_raster)) {
+  raster_file <- archivos_raster[[i]]
+  raster_orig <- rast(raster_file)
+  raster_clip <- mask(crop(raster_orig, limite_sf), limite_sf)
+  output_clip_filename <- sub(".tif$", "_clip.tif", raster_file)
+  writeRaster(raster_clip, output_clip_filename, overwrite = TRUE)
+  archivos_raster_clip[[i]] <- output_clip_filename
+}
+```
+
+------------------------------------------------------------------------
+
+## **8. Visualización en Grid (PNG/JPEG)**
+
+> **TIP:**\
+> Ajusta el tamaño de la imagen en `ancho_px` y `alto_px`, sólo si una vez exportada, la imagen se "corta".
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+profundidades <- unique(estratos)
+propiedades <- variables
+
+plots_list <- list()
+for (i in seq_along(archivos_raster_clip)) {
+  raster_file <- archivos_raster_clip[[i]]
+  etiqueta_mapa <- etiquetas_mapa[[i]]
+  raster_data <- rast(raster_file)
+  df <- as.data.frame(raster_data, xy = TRUE)
+  colnames(df)[3] <- "valor"
+  p <- ggplot(df, aes(x = x, y = y, fill = valor)) +
+    geom_raster() +
+    scale_fill_viridis(option = "D", na.value = "white") +
+    coord_fixed() +
+    theme_void() +
+    theme(
+      legend.position = "right",
+      plot.title = element_text(size = 9, face = "bold", hjust = 0.5)
+    ) +
+    ggtitle(etiqueta_mapa)
+  plots_list[[i]] <- p
+}
+
+n_filas <- length(propiedades)
+n_columnas <- length(profundidades)
+grid_plots <- vector("list", n_filas * n_columnas)
+for (i in seq_along(nombres_mapa)) {
+  name_parts <- strsplit(nombres_mapa[[i]], " - ")[[1]]
+  prop_idx <- match(name_parts[1], propiedades)
+  prof_idx <- match(name_parts[2], profundidades)
+  grid_plots[[(prop_idx - 1) * n_columnas + prof_idx]] <- plots_list[[i]]
+}
+
+ancho_px <- 1000 * n_columnas
+alto_px  <- 750 * n_filas
+
+jpeg("mapas_propiedades_grid_etiquetas.jpeg", width = ancho_px, height = alto_px, res = 300)
+do.call("grid.arrange", c(grid_plots, nrow = n_filas, ncol = n_columnas))
+dev.off()
+
+png("mapas_propiedades_grid_etiquetas.png", width = ancho_px, height = alto_px, res = 300)
+do.call("grid.arrange", c(grid_plots, nrow = n_filas, ncol = n_columnas))
+dev.off()
+```
+
+------------------------------------------------------------------------
+
+## **9. Medianas por Polígono y Exportación**
+
+> **IMPORTANTE:**\
+> El Shapefile `suelo.shp` incluye las unidades edafológicas de las cuáles se calculará la mediana de cada propiedad y profundidad. Debe estar en el mismo CRS que los archivos de `muestreo.csv`, `DEM.tif` y el `limite.shp`.\
+> Los resultados se exportan tanto en formato Shapefile como GeoPackage.
+
+```{r warning=FALSE, include=FALSE}
+library(exactextractr)
+
+cat("Calculando medianas de los mapas raster por polígono y estrato con exactextractr...\n")
+
+suelo_exact <- st_read("suelo.shp")
+
+for (var in variables) {
+  for (estrato in estratos) {
+    raster_filename <- paste0("mapa_", tolower(var), "_", gsub("-", "_", estrato), "_clip.tif")
+    if (file.exists(raster_filename)) {
+      raster_estrato <- terra::rast(raster_filename)
+      if (!terra::crs(raster_estrato) == sf::st_crs(suelo_exact)$wkt) {
+        raster_estrato <- terra::project(raster_estrato, sf::st_crs(suelo_exact)$wkt)
+      }
+      columna_nombre <- paste0(tolower(var), "_", gsub("-", "_", estrato), "_med")
+      stats <- exactextractr::exact_extract(raster_estrato, suelo_exact, 'median')
+      suelo_exact[[columna_nombre]] <- stats
+    } else {
+      warning(paste("Archivo raster no encontrado:", raster_filename))
+    }
+  }
+}
+
+st_write(suelo_exact, "suelo_raster_medianas.shp", delete_layer = TRUE)
+st_write(suelo_exact, "suelo_raster_medianas.gpkg", layer = "suelo_raster_medianas", delete_layer = TRUE)
+```
