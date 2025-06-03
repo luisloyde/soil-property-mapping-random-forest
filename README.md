@@ -51,3 +51,8 @@ This project is licensed under the GPL-3.0 License. See [LICENSE](LICENSE) for d
 ## Disclaimer
 
 This code is provided as-is, without warranty. Please check the compatibility of all R packages with your system.
+
+## Outputs example
+
+![mapas_propiedades_grid_etiquetas](https://github.com/user-attachments/assets/bd3907c6-26a0-4178-8ba0-589eb52c492e)
+
