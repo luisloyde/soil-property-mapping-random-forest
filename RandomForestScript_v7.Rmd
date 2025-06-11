@@ -205,27 +205,37 @@ unidades_simple <- st_transform(unidades_simple, crs(stack))
 unidades_vect <- vect(unidades_simple)
 
 # 3. Extraer valores de los ráster en los polígonos y asociar la clase
+set.seed(42)
+
+# 1. Extraer valores de los ráster en los polígonos y asociar la clase
+names(stack) <- paste0("lyr", 1:nlyr(stack))
 extr <- extract(stack, unidades_vect, df=TRUE)
-# Crea una tabla de correspondencia ID <-> CLAVE_WRB
-tabla_clave <- as.data.frame(unidades_vect)[, c("ID", "CLAVE_WRB")]
-# Une por ID
+tabla_clave <- as.data.frame(unidades_vect)
+tabla_clave$ID <- seq_len(nrow(tabla_clave))
 extr <- merge(extr, tabla_clave, by="ID")
 
-# 4. Entrenar Random Forest
-set.seed(42)
-# Selecciona solo las columnas de los ráster y la clase
-pred_cols <- names(stack)
-library(dplyr)
-set.seed(42)
-train_data_sample <- train_data %>%
+# 2. Define nombres de las bandas (ajusta si tienes otro número o prefijo)
+pred_cols <- paste0("lyr", 1:21)
+
+# 3. Muestrea por clase (estratificado)
+train_data_sample <- extr %>%
   group_by(CLAVE_WRB) %>%
   sample_n(size = min(5000, n()), replace = FALSE) %>%
   ungroup()
-rf_model <- randomForest(as.factor(CLAVE_WRB) ~ ., data=train_data_sample, ntree=500, importance=TRUE)
 
-# 5. Predecir la clase para cada píxel del stack
-names(stack) <- paste0("lyr", 1:nlyr(stack))
-pred_class <- predict(stack, rf_model, type="response")
+# 4. Selecciona SOLO las columnas de bandas y la clase
+train_data_sample <- train_data_sample %>%
+  select(all_of(pred_cols), CLAVE_WRB) %>%
+  filter(complete.cases(.))
+
+# 5. Entrena el modelo SOLO con esas columnas
+rf_model <- randomForest(as.factor(CLAVE_WRB) ~ ., data = train_data_sample, ntree = 500, importance = TRUE)
+
+# 6. Renombra las bandas del stack por si acaso
+names(stack) <- pred_cols
+
+# 7. Predice la clase para cada píxel del stack
+pred_class <- predict(stack, rf_model, type = "response")
 
 # 6. Convertir el raster de clases a polígonos
 polys <- as.polygons(pred_class, dissolve=TRUE)
@@ -237,6 +247,7 @@ st_write(polys_sf, "clasificacion_edafica.shp", delete_dsn=TRUE)
 cat("Clasificación y exportación a shapefile completadas.\n")
 
 ```
+
 ## **AVANCE HASTA AQUÍ**
 
 ## **8. Visualización en Grid (PNG/JPEG)**
@@ -303,7 +314,7 @@ library(exactextractr)
 
 cat("Calculando medianas de los mapas raster por polígono y estrato con exactextractr...\n")
 
-suelo_exact <- st_read("suelo.shp")
+suelo_exact <- st_read("clasificacion_edafica.shp")
 
 for (var in variables) {
   for (estrato in estratos) {
