@@ -333,6 +333,12 @@ for (var in variables) {
   }
 }
 
-st_write(suelo_exact, "suelo_raster_medianas.shp", delete_layer = TRUE)
-st_write(suelo_exact, "suelo_raster_medianas.gpkg", layer = "suelo_raster_medianas", delete_layer = TRUE)
+suelo_exact <- suelo_exact %>% rename(CLAVE_WRB = class)
+# 2. Disolver por CLAVE_WRB (puedes ajustar la función de resumen si gustas)
+suelo_exact_dis <- suelo_exact %>%
+  group_by(CLAVE_WRB) %>%
+  summarise(across(where(is.numeric), mean, na.rm = TRUE), .groups = 'drop')
+
+st_write(suelo_exact_dis, "suelo_raster_medianas.shp", delete_layer = TRUE)
+st_write(suelo_exact_dis, "suelo_raster_medianas.gpkg", layer = "suelo_raster_medianas", delete_layer = TRUE)
 ```
