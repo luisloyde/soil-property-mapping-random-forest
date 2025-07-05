@@ -83,7 +83,7 @@ estratos <- unique(datos$Estrato_cm)
 archivos_raster <- list()
 nombres_mapa <- list()
 etiquetas_mapa <- list()
-limite <- st_read("limite_v2.shp")
+limite <- st_read("limite.shp")
 limite_sf <- vect(limite)
 
 for (var in variables) {
@@ -131,12 +131,12 @@ names(stack) <- variables
 # Leer shapefile de unidades edafológicas y simplificarlas
 unidades <- st_read("suelo.shp")
 unidades_simple <- unidades %>%
-  group_by(GRUPO1) %>%  #PUEDE CAMBIARSE A GRUPO1
+  group_by(GRUPO1, CALIFP_G1) %>%
   summarise(geometry = st_union(geometry), .groups = "drop") %>%
   filter(!(GRUPO1 %in% c("NA")))
 
 # Pila todos los raster, asegurando mismo extent/resolución
-stack_full <- c(stack, dem)
+stack_full <- c(stack, dem, pendiente)
 # Convierte a tabla, pero NO elimina NAs
 pixel_data <- as.data.frame(stack_full, na.rm=FALSE)
 # Usar píxeles completos para clustering
@@ -149,17 +149,15 @@ cluster_map <- rep(NA, nrow(pixel_data))
 cluster_map[valid_rows] <- kmeans_res$cluster
 r_class <- rast(stack_full, nlyr=1)
 values(r_class) <- cluster_map
-# 5. Suavizado y exportación
+# SuavizadO
 r_class_smooth <- focal(r_class, w=9, fun=mean, na.policy="omit", na.rm=TRUE) #modificar w y fun
-plot(r_class_smooth)
-plot(unidades_simple, add = TRUE, border = "red", col = NA)
 
-unidades_edafo <- as.polygons(r_class_smooth)                  # Convierte a polígonos
-plot(unidades_edafo)
+# Calcular mediana de cada polígono
+unidades_class <- as.polygons(r_class_smooth, dissolve = TRUE)
+medianas_shp <- extract(stack_full, unidades_class, fun = median, na.rm = TRUE)
+unidades_class <- cbind(unidades_class, medianas_shp[,-1])
 
-
-writeRaster(r_class_smooth, "kmeans_clusters_suavizado.tif", overwrite=TRUE)
-
+# Relacionar cada unidad a 
 
 
 
@@ -171,29 +169,7 @@ writeRaster(r_class_smooth, "kmeans_clusters_suavizado.tif", overwrite=TRUE)
 
 
 
-stack_full <- c(stack, dem_clip)
-names(stack_full)[nlyr(stack_full)] <- "DEM"
 
-# 3. Extrae valores de todos los píxeles, elimina NAs
-pixel_data <- as.data.frame(stack_full, na.rm = TRUE)
-
-# 4. Realiza k-means
-set.seed(123)
-k <- 15  # El número de clusters que prefieras
-kmeans_res <- kmeans(pixel_data, centers = k)
-
-# 5. Crear raster de clusters
-r_class <- rast(stack_full, nlyr = 1)
-values(r_class) <- NA
-valid_idx <- which(complete.cases(as.data.frame(stack_full)))
-values(r_class)[valid_idx] <- kmeans_res$cluster
-
-# 6. (Opcional) Suavizado usando filtro de mayoría
-r_class_smooth <- focal(r_class, w = 3, fun = modal, na.policy = "omit", na.rm=TRUE)
-
-# 7. Guarda el raster final
-writeRaster(r_class_smooth, "kmeans_clusters_suavizado.tif", overwrite=TRUE)
-writeRaster(r_class, "kmeans_clusters_bruto.tif", overwrite=TRUE)
 
 ## **10. Exportar imágenes de mapas**
 
@@ -230,12 +206,27 @@ for (i in seq_along(nombres_mapa)) {
   grid_plots[[(prop_idx - 1) * n_columnas + prof_idx]] <- plots_list[[i]]
 }
 
-ancho_px <- 1000 * n_columnas
-alto_px  <- 750 * n_filas
+ancho_px <- 500 * n_columnas
+alto_px  <- 375 * n_filas
 
-jpeg("mapas_propiedades_grid_etiquetas.jpeg", width = ancho_px, height = alto_px, res = 300)
-do.call("grid.arrange", c(grid_plots, nrow = n_filas, ncol = n_columnas))
-dev.off()
+for (i in seq_along(grid_plots)) {
+  ggsave(sprintf("mapa_%02d.png", i), grid_plots[[i]], width=5, height=3.75, dpi=300)
+}
+
+library(patchwork)
+p_grid <- wrap_plots(unlist(grid_plots, recursive = TRUE), ncol = n_columnas)
+ggsave("mapas_propiedades_grid_etiquetas.jpeg",
+       p_grid,
+       width = n_columnas*5, height = n_filas*3.75, units = "in", dpi = 150)
+
+
+
+
+
+
+
+
+
 
 png("mapas_propiedades_grid_etiquetas.png", width = ancho_px, height = alto_px, res = 300)
 do.call("grid.arrange", c(grid_plots, nrow = n_filas, ncol = n_columnas))

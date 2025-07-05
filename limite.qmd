@@ -1,5 +1,5 @@
 <!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
-<qgis version="3.42.1-Münster">
+<qgis version="3.32.0-Lima">
   <identifier></identifier>
   <parentidentifier></parentidentifier>
   <language></language>
