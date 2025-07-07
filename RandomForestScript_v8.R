@@ -116,7 +116,7 @@ names(stack) <- variables
 # Leer shapefile de unidades edafológicas y simplificarlas
 unidades <- st_read("suelo.shp")
 unidades_simple <- unidades %>%
-  group_by(GRUPO1, CALIFP_G1) %>%
+  group_by(GRUPO1,CALIFS_G1) %>%
   summarise(geometry = st_union(geometry), .groups = "drop") %>%
   filter(!(GRUPO1 %in% c("NA")))
 
@@ -175,30 +175,38 @@ swat_medianas <- swat_df %>%
 
 library(purrr)
 
-# Lista de columnas de parámetros de suelo
-vars <- c("SOL_BD", "SOL_AWC", "SOL_K", "SOL_CBN", "SOL_CLAY", "SOL_SILT", "SOL_SAND", "USLE_K")
+# Extrae los atributos como data.frame
+df_unidades <- as.data.frame(unidades_class)
 
-# Función para encontrar el índice del perfil SWAT más parecido a un polígono
-find_closest_soil <- function(x, swat_tbl, vars) {
-  # x: fila de unidades_class (parámetros del polígono)
-  # swat_tbl: tabla de perfiles swat
-  # vars: variables de comparación
-  # Calcula la distancia euclidiana a cada perfil SWAT
-  dists <- apply(swat_tbl[vars], 1, function(y) sqrt(sum((as.numeric(x[vars]) - as.numeric(y))^2)))
+# Ahora selecciona solo las columnas numéricas que necesitas
+df_unidades_num <- df_unidades[vars]
+
+# Asegúrate que son numéricas
+df_unidades_num <- data.frame(lapply(df_unidades_num, function(x) as.numeric(as.character(x))))
+
+# Ahora ya puedes usar as.matrix
+mat_unidades <- as.matrix(df_unidades_num)
+
+mat_swat <- as.matrix(swat_medianas[vars])
+
+closest_indices <- apply(mat_unidades, 1, function(x) {
+  dists <- apply(mat_swat, 1, function(y) sqrt(sum((x - y)^2)))
   which.min(dists)
-}
+})
 
-# Aplica la función a cada fila de unidades_class
-closest_indices <- apply(unidades_class[vars], 1, find_closest_soil, swat_tbl = swat_medianas, vars = vars)
+# Asignar los suelos más parecidos
+df_unidades$SEQN_match <- swat_medianas$SEQN[closest_indices]
 
-# Asigna SEQN y SNAM del perfil más parecido a cada polígono
-unidades_class$SEQN_match <- swat_medianas$SEQN[closest_indices]
-unidades_class$SNAM_match <- swat_medianas$SNAM[closest_indices]
+# Extrae el número final de SNAM_match como nuevo campo SEQN_match_num
+df_unidades$SEQN_match <- as.numeric(sub(".*-(\\d+)$", "\\1", df_unidades$SNAM_match)) - 1
 
+unique(df_unidades$SNAM_match)
+unique(df_unidades$SEQN_match)
 
-
-
-
+# Añadir los campos al SpatVector
+unidades_class$SEQN <- df_unidades$SEQN_match
+unidades_class$SNAM <- df_unidades$SNAM_match
+writeVector(unidades_class, "edafologia_SWAT.shp", overwrite=TRUE)
 
 
 
