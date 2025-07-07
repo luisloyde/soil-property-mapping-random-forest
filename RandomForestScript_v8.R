@@ -45,21 +45,6 @@ datos <- cbind(datos, valores_extraidos)
 ## **5. Definir Variables y Etiquetas**
 
 
-variables <- c("Profundidad", "DAP", "CC", "PMP", "Arena", "Limo", "Arcilla", "Arenas_finas", "CO", "MO", "Cond_Hidr")
-etiquetas <- c(
-  "Profundidad (cm)",
-  "Densidad Aparente Promedio (g/cm³)",
-  "Capacidad de Campo (%HG)",
-  "Punto de Marchitez Permanente (%HG)",
-  "Arena (%)",
-  "Limo (%)",
-  "Arcilla (%)",
-  "Arenas finas (g)",
-  "Carbono orgánico (%)",
-  "Materia orgánica (%)",
-  "Conductividad hidráulica K (mm/h)"
-)
-
 variables <- c("SOL_BD","SOL_AWC","SOL_K","SOL_CBN","SOL_CLAY","SOL_SILT","SOL_SAND","USLE_K")
 etiquetas <- c(
   expression("Densidad Aparente Promedio (g/cm"^3*")"),
@@ -157,9 +142,58 @@ unidades_class <- as.polygons(r_class_smooth, dissolve = TRUE)
 medianas_shp <- extract(stack_full, unidades_class, fun = median, na.rm = TRUE)
 unidades_class <- cbind(unidades_class, medianas_shp[,-1])
 
-# Relacionar cada unidad a 
+# Relacionar cada unidad a base de datos de SWAT
+library(here)
+library(DBI)
+library(odbc)
 
+ruta_archivo <- here::here("SWAT2012.mdb")
 
+con <- dbConnect(
+  odbc(),
+  Driver = "Microsoft Access Driver (*.mdb, *.accdb)",
+  DBQ = ruta_archivo
+)
+
+swat_df <- dbReadTable(con, "usersoil")
+
+swat_medianas <- swat_df %>%
+  rowwise() %>%
+  mutate(
+    SOL_BD   = mean(c(SOL_BD1,   SOL_BD2),   na.rm = TRUE),
+    SOL_AWC  = mean(c(SOL_AWC1,  SOL_AWC2),  na.rm = TRUE),
+    SOL_K    = mean(c(SOL_K1,    SOL_K2),    na.rm = TRUE),
+    SOL_CBN  = mean(c(SOL_CBN1,  SOL_CBN2),  na.rm = TRUE),
+    SOL_CLAY = mean(c(CLAY1,     CLAY2),     na.rm = TRUE),
+    SOL_SILT = mean(c(SILT1,     SILT2),     na.rm = TRUE),
+    SOL_SAND = mean(c(SAND1,     SAND2),     na.rm = TRUE),
+    USLE_K   = mean(c(USLE_K1,   USLE_K2),   na.rm = TRUE)
+  ) %>%
+  select(SEQN, SNAM, SOL_BD, SOL_AWC, SOL_K, SOL_CBN, SOL_CLAY, SOL_SILT, SOL_SAND, USLE_K)
+
+# Calcular distancias euclidianas para obtener tipo de suelo más parecido
+
+library(purrr)
+
+# Lista de columnas de parámetros de suelo
+vars <- c("SOL_BD", "SOL_AWC", "SOL_K", "SOL_CBN", "SOL_CLAY", "SOL_SILT", "SOL_SAND", "USLE_K")
+
+# Función para encontrar el índice del perfil SWAT más parecido a un polígono
+find_closest_soil <- function(x, swat_tbl, vars) {
+  # x: fila de unidades_class (parámetros del polígono)
+  # swat_tbl: tabla de perfiles swat
+  # vars: variables de comparación
+  # Calcula la distancia euclidiana a cada perfil SWAT
+  dists <- apply(swat_tbl[vars], 1, function(y) sqrt(sum((as.numeric(x[vars]) - as.numeric(y))^2)))
+  which.min(dists)
+}
+
+# Aplica la función a cada fila de unidades_class
+closest_indices <- apply(unidades_class[vars], 1, find_closest_soil, swat_tbl = swat_medianas, vars = vars)
+
+# Asigna SEQN y SNAM del perfil más parecido a cada polígono
+unidades_class$SEQN_match <- swat_medianas$SEQN[closest_indices]
+unidades_class$SNAM_match <- swat_medianas$SNAM[closest_indices]
 
 
 
