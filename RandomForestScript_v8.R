@@ -215,7 +215,7 @@ writeRaster(r_seqn, "edafologia_SWAT_SEQN.tif", overwrite = TRUE)
 
 
 
-
+# Exportar como imagen
 
 # 1. Define etiquetas como lista de expressions
 etiquetas <- list(
@@ -255,54 +255,7 @@ for (i in seq_along(archivos_raster)) {
       legend.position = "right",
       plot.title = element_text(size = 9, face = "bold", hjust = 0.5)
     ) +
-    ggtitle(etiqueta_mapa)  # <- ¡Aquí va como expression!
+    ggtitle(etiquetas_mapa[[i]])
   plots_list[[i]] <- p
   ggsave(sprintf("mapa_%02d.png", i), p, width=5, height=3.75, dpi=300)
 }
-
-
-
-
-
-
-
-
-
-
-## **10. Exportar imágenes de mapas**
-
-profundidades <- unique(estratos)
-propiedades <- variables
-
-plots_list <- list()
-for (i in seq_along(archivos_raster)) {
-  raster_file <- archivos_raster[[i]]
-  etiqueta_mapa <- etiquetas_mapa[[i]]
-  raster_data <- rast(raster_file)
-  df <- as.data.frame(raster_data, xy = TRUE)
-  colnames(df)[3] <- "Valor"
-  p <- ggplot(df, aes(x = x, y = y, fill = Valor)) +
-    geom_raster() +
-    scale_fill_viridis(option = "D", na.value = "white") +
-    coord_fixed() +
-    theme_void() +
-    theme(
-      legend.position = "right",
-      plot.title = element_text(size = 9, face = "bold", hjust = 0.5)
-    ) +
-    ggtitle(etiqueta_mapa)
-  plots_list[[i]] <- p
-}
-
-n_filas <- length(propiedades)
-n_columnas <- length(profundidades)
-grid_plots <- vector("list", n_filas * n_columnas)
-
-ancho_px <- 500 * n_columnas
-alto_px  <- 375 * n_filas
-
-for (i in seq_along(grid_plots)) {
-  ggsave(sprintf("mapa_%02d.png", i), grid_plots[[i]], width=5, height=3.75, dpi=300)
-}
-
-
