@@ -86,7 +86,7 @@ for (var in variables) {
     train_index <- createDataPartition(datos_estrato[[var]], p = 0.5, list = FALSE)
     datos_train <- datos_estrato[train_index, ]
     datos_test <- datos_estrato[-train_index, ]
-    modelo_rf <- randomForest(as.formula(paste(var, "~ altitud + pendiente")), 
+    modelo_rf <- randomForest(as.formula(paste(var, "~ pendiente + altitud")), 
                               data = datos_train, importance = TRUE)
     predicciones_test <- predict(modelo_rf, newdata = datos_test)
     mse <- mean((datos_test[[var]] - predicciones_test)^2)
@@ -97,12 +97,11 @@ for (var in variables) {
     mapa_var <- predict(variables_topograficas, modelo_rf)
     mapa_var_clip <- mask(crop(mapa_var, limite_sf), limite_sf)
     
-    output_clip_filename <- paste0("mapa_", tolower(var), "_", gsub("-", "_", estrato), "_clip.tif")
+    output_clip_filename <- paste0("mapa_", var, "_", gsub("-", "_", estrato), "_clip.tif")
     writeRaster(mapa_var_clip, output_clip_filename, overwrite = TRUE)
     
     archivos_raster[[length(archivos_raster) + 1]] <- output_clip_filename
     nombres_mapa[[length(nombres_mapa) + 1]] <- paste(var, estrato, sep = " - ")
-    etiquetas_mapa[[length(etiquetas_mapa) + 1]] <- paste0(etiquetas[var], "\n", estrato)
   }
 }
 
@@ -116,7 +115,7 @@ names(stack) <- variables
 # Leer shapefile de unidades edafológicas y simplificarlas
 unidades <- st_read("suelo.shp")
 unidades_simple <- unidades %>%
-  group_by(GRUPO1,CALIFS_G1) %>%
+  group_by(GRUPO1) %>%
   summarise(geometry = st_union(geometry), .groups = "drop") %>%
   filter(!(GRUPO1 %in% c("NA")))
 
@@ -179,7 +178,7 @@ library(purrr)
 df_unidades <- as.data.frame(unidades_class)
 
 # Ahora selecciona solo las columnas numéricas que necesitas
-df_unidades_num <- df_unidades[vars]
+df_unidades_num <- df_unidades[variables]
 
 # Asegúrate que son numéricas
 df_unidades_num <- data.frame(lapply(df_unidades_num, function(x) as.numeric(as.character(x))))
@@ -187,7 +186,7 @@ df_unidades_num <- data.frame(lapply(df_unidades_num, function(x) as.numeric(as.
 # Ahora ya puedes usar as.matrix
 mat_unidades <- as.matrix(df_unidades_num)
 
-mat_swat <- as.matrix(swat_medianas[vars])
+mat_swat <- as.matrix(swat_medianas[variables])
 
 closest_indices <- apply(mat_unidades, 1, function(x) {
   dists <- apply(mat_swat, 1, function(y) sqrt(sum((x - y)^2)))
@@ -196,17 +195,74 @@ closest_indices <- apply(mat_unidades, 1, function(x) {
 
 # Asignar los suelos más parecidos
 df_unidades$SEQN_match <- swat_medianas$SEQN[closest_indices]
-
-# Extrae el número final de SNAM_match como nuevo campo SEQN_match_num
-df_unidades$SEQN_match <- as.numeric(sub(".*-(\\d+)$", "\\1", df_unidades$SNAM_match)) - 1
-
-unique(df_unidades$SNAM_match)
-unique(df_unidades$SEQN_match)
+df_unidades$SNAM_match <- swat_medianas$SNAM[closest_indices]
 
 # Añadir los campos al SpatVector
 unidades_class$SEQN <- df_unidades$SEQN_match
 unidades_class$SNAM <- df_unidades$SNAM_match
 writeVector(unidades_class, "edafologia_SWAT.shp", overwrite=TRUE)
+
+# Pasar spatVector a raster
+library(terra)
+
+ref_raster <- dem
+r_seqn <- rasterize(unidades_class, ref_raster, field = "SEQN")
+writeRaster(r_seqn, "edafologia_SWAT_SEQN.tif", overwrite = TRUE)
+
+
+
+
+
+
+
+
+
+# 1. Define etiquetas como lista de expressions
+etiquetas <- list(
+  SOL_BD   = expression("Densidad Aparente Promedio (g/cm"^3*")"),
+  SOL_AWC  = expression("Capacidad de agua disponible (mm[H[2]*O]/mm[suelo]"),
+  SOL_K    = expression("Conductividad hidráulica K (mm/h)"),
+  SOL_CBN  = expression("Contenido de carbono orgánico (%)"),
+  SOL_CLAY = expression("Arcilla (%)"),
+  SOL_SILT = expression("Limo (%)"),
+  SOL_SAND = expression("Arena (%)"),
+  USLE_K   = expression("Factor de erosibilidad del suelo")
+)
+
+# 2. Construye etiquetas_mapa como lista de expressions (no strings)
+etiquetas_mapa <- list()
+for (var in variables) {
+  for (estrato in estratos) {
+    etiquetas_mapa[[length(etiquetas_mapa) + 1]] <-
+      as.expression(substitute(e * "\n" * p, list(e = etiquetas[[var]], p = estrato)))
+  }
+}
+
+# 3. En el loop de gráficos, úsala directamente en ggtitle
+plots_list <- list()
+for (i in seq_along(archivos_raster)) {
+  raster_file <- archivos_raster[[i]]
+  etiqueta_mapa <- etiquetas_mapa[[i]]
+  raster_data <- rast(raster_file)
+  df <- as.data.frame(raster_data, xy = TRUE)
+  colnames(df)[3] <- "Valor"
+  p <- ggplot(df, aes(x = x, y = y, fill = Valor)) +
+    geom_raster() +
+    scale_fill_viridis(option = "D", na.value = "white") +
+    coord_fixed() +
+    theme_void() +
+    theme(
+      legend.position = "right",
+      plot.title = element_text(size = 9, face = "bold", hjust = 0.5)
+    ) +
+    ggtitle(etiqueta_mapa)  # <- ¡Aquí va como expression!
+  plots_list[[i]] <- p
+  ggsave(sprintf("mapa_%02d.png", i), p, width=5, height=3.75, dpi=300)
+}
+
+
+
+
 
 
 
@@ -224,8 +280,8 @@ for (i in seq_along(archivos_raster)) {
   etiqueta_mapa <- etiquetas_mapa[[i]]
   raster_data <- rast(raster_file)
   df <- as.data.frame(raster_data, xy = TRUE)
-  colnames(df)[3] <- "valor"
-  p <- ggplot(df, aes(x = x, y = y, fill = valor)) +
+  colnames(df)[3] <- "Valor"
+  p <- ggplot(df, aes(x = x, y = y, fill = Valor)) +
     geom_raster() +
     scale_fill_viridis(option = "D", na.value = "white") +
     coord_fixed() +
@@ -241,12 +297,6 @@ for (i in seq_along(archivos_raster)) {
 n_filas <- length(propiedades)
 n_columnas <- length(profundidades)
 grid_plots <- vector("list", n_filas * n_columnas)
-for (i in seq_along(nombres_mapa)) {
-  name_parts <- strsplit(nombres_mapa[[i]], " - ")[[1]]
-  prop_idx <- match(name_parts[1], propiedades)
-  prof_idx <- match(name_parts[2], profundidades)
-  grid_plots[[(prop_idx - 1) * n_columnas + prof_idx]] <- plots_list[[i]]
-}
 
 ancho_px <- 500 * n_columnas
 alto_px  <- 375 * n_filas
@@ -255,22 +305,4 @@ for (i in seq_along(grid_plots)) {
   ggsave(sprintf("mapa_%02d.png", i), grid_plots[[i]], width=5, height=3.75, dpi=300)
 }
 
-library(patchwork)
-p_grid <- wrap_plots(unlist(grid_plots, recursive = TRUE), ncol = n_columnas)
-ggsave("mapas_propiedades_grid_etiquetas.jpeg",
-       p_grid,
-       width = n_columnas*5, height = n_filas*3.75, units = "in", dpi = 150)
-
-
-
-
-
-
-
-
-
-
-png("mapas_propiedades_grid_etiquetas.png", width = ancho_px, height = alto_px, res = 300)
-do.call("grid.arrange", c(grid_plots, nrow = n_filas, ncol = n_columnas))
-dev.off()
 
