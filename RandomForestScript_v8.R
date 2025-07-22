@@ -16,19 +16,19 @@ library(gridExtra)
 library(exactextractr)
 
 # Definir el directorio de trabajo como el del proyecto
-setwd(here::here())
+setwd("D:/SeTE/Proyectos/Arca Continental SLP/DSM/soil-property-mapping-random-forest")
 
 
 ## **2. Cargar y Procesar Datos de Muestreo**
 
 datos <- read.csv("muestreo_estandarizado.csv")
-# Convertir a objeto sf con CRS adecuado (ajusta según corresponda)
+# Convertir a objeto sf con CRS adecuado (preferible en UTM)
 datos_sf <- st_as_sf(datos, coords = c("X", "Y"), crs = 32614)
 
 ## **3. Cargar y Procesar DEM**
 
-dem <- rast("dem.tif")
-crs(dem) <- "EPSG:32614"
+dem <- rast("dem_wgs84.tif")
+crs(dem) <- "EPSG:4326" # Preferible reproyectar a WGS84
 
 ## **4. Derivar Variables Topográficas**
 
@@ -48,8 +48,8 @@ datos <- cbind(datos, valores_extraidos)
 variables <- c("SOL_BD","SOL_AWC","SOL_K","SOL_CBN","SOL_CLAY","SOL_SILT","SOL_SAND","USLE_K")
 etiquetas <- c(
   expression("Densidad Aparente Promedio (g/cm"^3*")"),
-  expression("Capacidad de agua disponible (mm[H[2]*O]/mm[suelo]"),
-  expression("Conductividad hidráulica K (mm/h)"),
+  expression("Capacidad de agua disponible (mm"[H[2]*O] * "/mm"[suelo] * ")"),
+  "Conductividad hidráulica K (mm/h)",
   "Contenido de carbono orgánico (%)",
   "Arcilla (%)",
   "Limo (%)",
@@ -68,7 +68,7 @@ estratos <- unique(datos$Estrato_cm)
 archivos_raster <- list()
 nombres_mapa <- list()
 etiquetas_mapa <- list()
-limite <- st_read("limite.shp")
+limite <- st_read("limite_wgs84.shp") # Preferible que esté en CRS 4326 (WGS84)
 limite_sf <- vect(limite)
 
 for (var in variables) {
@@ -100,6 +100,30 @@ for (var in variables) {
     output_clip_filename <- paste0("mapa_", var, "_", gsub("-", "_", estrato), "_clip.tif")
     writeRaster(mapa_var_clip, output_clip_filename, overwrite = TRUE)
     
+    # Generar imagen PNG/JPG del raster recortado con ggplot2
+    df_raster <- as.data.frame(mapa_var_clip, xy = TRUE)
+    colnames(df_raster)[3] <- "Valor"
+    
+    # Etiqueta matemática como título (puedes usar subíndice o salto de línea)
+    etiqueta_titulo <- as.expression(substitute(e * "\n" * p, list(e = etiquetas[[var]], p = estrato)))
+    
+    p <- ggplot(df_raster, aes(x = x, y = y, fill = Valor)) +
+      geom_raster() +
+      scale_fill_viridis(option = "D", na.value = "white") +
+      coord_fixed() +
+      theme_minimal() +
+      theme(
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank(),
+        legend.position = "right",
+        plot.title = element_text(size = 10, face = "bold", hjust = 0.5)
+      ) +
+      ggtitle(etiqueta_titulo)
+    
+    # Guarda el archivo de imagen
+    ggsave(sprintf("mapa_%s_%s.png", var, gsub("-", "_", estrato)), p, width = 5, height = 3.75, dpi = 300)
+    
     archivos_raster[[length(archivos_raster) + 1]] <- output_clip_filename
     nombres_mapa[[length(nombres_mapa) + 1]] <- paste(var, estrato, sep = " - ")
   }
@@ -113,26 +137,31 @@ stack <- rast(unlist(archivos_raster))
 names(stack) <- variables
 
 # Leer shapefile de unidades edafológicas y simplificarlas
-unidades <- st_read("suelo.shp")
+unidades <- st_read("suelo_wgs84.shp")
 unidades_simple <- unidades %>%
-  group_by(GRUPO1) %>%
+  group_by(Grupo1) %>%
   summarise(geometry = st_union(geometry), .groups = "drop") %>%
-  filter(!(GRUPO1 %in% c("NA")))
+  filter(!(Grupo1 %in% c("NA")))
 
 # Pila todos los raster, asegurando mismo extent/resolución
-stack_full <- c(stack, dem, pendiente)
+stack_aligned <- resample(stack, dem, method = "bilinear")
+stack_full <- c(stack_aligned, dem, pendiente)
+
 # Convierte a tabla, pero NO elimina NAs
 pixel_data <- as.data.frame(stack_full, na.rm=FALSE)
+
 # Usar píxeles completos para clustering
 valid_rows <- complete.cases(pixel_data)
 set.seed(123)
 k=nrow(unidades_simple)
+
 kmeans_res <- kmeans(pixel_data[valid_rows, ], centers = k)
 # Asignar los clusters de vuelta como arriba
 cluster_map <- rep(NA, nrow(pixel_data))
 cluster_map[valid_rows] <- kmeans_res$cluster
 r_class <- rast(stack_full, nlyr=1)
 values(r_class) <- cluster_map
+
 # SuavizadO
 r_class_smooth <- focal(r_class, w=9, fun=mean, na.policy="omit", na.rm=TRUE) #modificar w y fun
 
@@ -209,53 +238,13 @@ ref_raster <- dem
 r_seqn <- rasterize(unidades_class, ref_raster, field = "SEQN")
 writeRaster(r_seqn, "edafologia_SWAT_SEQN.tif", overwrite = TRUE)
 
+# Generar .txt (Lookup table)
+tabla_swat <- unique(data.frame(
+  Value = unidades_class$SEQN,
+  Name  = unidades_class$SNAM
+))
 
+tabla_swat <- tabla_swat[order(tabla_swat$Value), ]
 
-
-
-
-
-# Exportar como imagen
-
-# 1. Define etiquetas como lista de expressions
-etiquetas <- list(
-  SOL_BD   = expression("Densidad Aparente Promedio (g/cm"^3*")"),
-  SOL_AWC  = expression("Capacidad de agua disponible (mm[H[2]*O]/mm[suelo]"),
-  SOL_K    = expression("Conductividad hidráulica K (mm/h)"),
-  SOL_CBN  = expression("Contenido de carbono orgánico (%)"),
-  SOL_CLAY = expression("Arcilla (%)"),
-  SOL_SILT = expression("Limo (%)"),
-  SOL_SAND = expression("Arena (%)"),
-  USLE_K   = expression("Factor de erosibilidad del suelo")
-)
-
-# 2. Construye etiquetas_mapa como lista de expressions (no strings)
-etiquetas_mapa <- list()
-for (var in variables) {
-  for (estrato in estratos) {
-    etiquetas_mapa[[length(etiquetas_mapa) + 1]] <-
-      as.expression(substitute(e * "\n" * p, list(e = etiquetas[[var]], p = estrato)))
-  }
-}
-
-# 3. En el loop de gráficos, úsala directamente en ggtitle
-plots_list <- list()
-for (i in seq_along(archivos_raster)) {
-  raster_file <- archivos_raster[[i]]
-  etiqueta_mapa <- etiquetas_mapa[[i]]
-  raster_data <- rast(raster_file)
-  df <- as.data.frame(raster_data, xy = TRUE)
-  colnames(df)[3] <- "Valor"
-  p <- ggplot(df, aes(x = x, y = y, fill = Valor)) +
-    geom_raster() +
-    scale_fill_viridis(option = "D", na.value = "white") +
-    coord_fixed() +
-    theme_void() +
-    theme(
-      legend.position = "right",
-      plot.title = element_text(size = 9, face = "bold", hjust = 0.5)
-    ) +
-    ggtitle(etiquetas_mapa[[i]])
-  plots_list[[i]] <- p
-  ggsave(sprintf("mapa_%02d.png", i), p, width=5, height=3.75, dpi=300)
-}
+# Escribe el archivo
+write.table(tabla_swat, "SWAT_soil_table.txt", sep = ",", row.names = FALSE, col.names = TRUE, quote = TRUE)
