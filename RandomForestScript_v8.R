@@ -1,7 +1,6 @@
+# Digital Soil Property Mapping from Field Sampling and DEM
 
-# Modelado y Mapeo Digital de Propiedades de Suelo a partir de Muestreo de Campo y DEM
-
-## **1. Librerías y Configuración**
+## 1. Libraries and Configuration
 
 rm(list = ls())
 
@@ -15,99 +14,93 @@ library(viridis)
 library(gridExtra)
 library(exactextractr)
 
-# Definir el directorio de trabajo como el del proyecto
-setwd("D:/SeTE/Proyectos/Arca Continental SLP/DSM/soil-property-mapping-random-forest")
+# Set working directory to project root
+setwd(here::here())
 
+## 2. Load and Process Field Sampling Data
 
-## **2. Cargar y Procesar Datos de Muestreo**
+data <- read.csv("muestreo_estandarizado.csv")
+# Convert to sf object with appropriate CRS (preferably UTM)
+data_sf <- st_as_sf(data, coords = c("X", "Y"), crs = 32614)
 
-datos <- read.csv("muestreo_estandarizado.csv")
-# Convertir a objeto sf con CRS adecuado (preferible en UTM)
-datos_sf <- st_as_sf(datos, coords = c("X", "Y"), crs = 32614)
-
-## **3. Cargar y Procesar DEM**
+## 3. Load and Process DEM
 
 dem <- rast("dem_wgs84.tif")
-crs(dem) <- "EPSG:4326" # Preferible reproyectar a WGS84
+crs(dem) <- "EPSG:4326" # Preferably reproject to WGS84
 
-## **4. Derivar Variables Topográficas**
+## 4. Derive Topographic Variables
 
-# Calcular pendiente a partir del DEM
-pendiente <- terrain(dem, v = "slope", unit = "degrees")
-variables_topograficas <- c(dem, pendiente)
-names(variables_topograficas) <- c("altitud", "pendiente")
+# Calculate slope from DEM
+slope <- terrain(dem, v = "slope", unit = "degrees")
+topo_vars <- c(dem, slope)
+names(topo_vars) <- c("elevation", "slope")
 
-# Extraer valores de altitud y pendiente para cada punto de muestreo
-valores_extraidos <- extract(variables_topograficas, vect(datos_sf))
-datos <- cbind(datos, valores_extraidos)
+# Extract elevation and slope values for each sampling point
+extracted_vals <- extract(topo_vars, vect(data_sf))
+data <- cbind(data, extracted_vals)
 
-
-## **5. Definir Variables y Etiquetas**
-
+## 5. Define Variables and Labels
 
 variables <- c("SOL_BD","SOL_AWC","SOL_K","SOL_CBN","SOL_CLAY","SOL_SILT","SOL_SAND","USLE_K")
-etiquetas <- c(
-  expression("Densidad Aparente Promedio (g/cm"^3*")"),
-  expression("Capacidad de agua disponible (mm"[H[2]*O] * "/mm"[suelo] * ")"),
-  "Conductividad hidráulica K (mm/h)",
-  "Contenido de carbono orgánico (%)",
-  "Arcilla (%)",
-  "Limo (%)",
-  "Arena (%)",
-  "Factor de erosibilidad del suelo"
+labels <- c(
+  expression("Bulk Density (g/cm"^3*")"),
+  expression("Available Water Capacity (mm"[H[2]*O] * "/mm"[soil] * ")"),
+  "Hydraulic Conductivity K (mm/h)",
+  "Organic Carbon Content (%)",
+  "Clay (%)",
+  "Silt (%)",
+  "Sand (%)",
+  "USLE K Factor"
 )
+names(labels) <- variables
 
-names(etiquetas) <- variables
+depths <- unique(data$Estrato_cm)
 
-estratos <- unique(datos$Estrato_cm)
+## 6. Modeling and Raster Map Generation
 
-
-## **6. Modelado y Generación de Mapas Raster**
-
-
-archivos_raster <- list()
-nombres_mapa <- list()
-etiquetas_mapa <- list()
-limite <- st_read("limite_wgs84.shp") # Preferible que esté en CRS 4326 (WGS84)
-limite_sf <- vect(limite)
+raster_files <- list()
+map_names <- list()
+map_labels <- list()
+boundary <- st_read("limite_wgs84.shp") # Should be in CRS 4326 (WGS84)
+boundary_sf <- vect(boundary)
 
 for (var in variables) {
-  cat("Procesando la variable:", var, "\n")
-  for (estrato in estratos) {
-    cat("Procesando el estrato:", estrato, "para la variable:", var, "\n")
-    datos_estrato <- datos %>% filter(Estrato_cm == estrato)
-    datos_estrato <- datos_estrato %>%
-      filter(!is.na(.data[[var]]), !is.na(altitud), !is.na(pendiente))
-    if (nrow(datos_estrato) < 10) {
-      cat("No hay suficientes datos para el estrato", estrato, "y variable", var, "\n")
+  cat("Processing variable:", var, "\n")
+  for (depth in depths) {
+    cat("Processing depth:", depth, "for variable:", var, "\n")
+    data_depth <- data %>% filter(Estrato_cm == depth)
+    data_depth <- data_depth %>%
+      filter(!is.na(.data[[var]]), !is.na(elevation), !is.na(slope))
+    if (nrow(data_depth) < 10) {
+      cat("Not enough data for depth", depth, "and variable", var, "\n")
       next
     }
     set.seed(123)
-    train_index <- createDataPartition(datos_estrato[[var]], p = 0.5, list = FALSE)
-    datos_train <- datos_estrato[train_index, ]
-    datos_test <- datos_estrato[-train_index, ]
-    modelo_rf <- randomForest(as.formula(paste(var, "~ pendiente + altitud")), 
-                              data = datos_train, importance = TRUE)
-    predicciones_test <- predict(modelo_rf, newdata = datos_test)
-    mse <- mean((datos_test[[var]] - predicciones_test)^2)
+    train_index <- createDataPartition(data_depth[[var]], p = 0.5, list = FALSE)
+    train_data <- data_depth[train_index, ]
+    test_data <- data_depth[-train_index, ]
+    rf_model <- randomForest(as.formula(paste(var, "~ slope + elevation")), 
+                             data = train_data, importance = TRUE)
+    test_pred <- predict(rf_model, newdata = test_data)
+    mse <- mean((test_data[[var]] - test_pred)^2)
     cat("MSE:", mse,"\n")
     cat("RMSE:", sqrt(mse), "\n")
     
-    # Predicción y recorte directo
-    mapa_var <- predict(variables_topograficas, modelo_rf)
-    mapa_var_clip <- mask(crop(mapa_var, limite_sf), limite_sf)
+    # Prediction and direct clipping
+    var_map <- predict(topo_vars, rf_model)
+    var_map_clip <- mask(crop(var_map, boundary_sf), boundary_sf)
     
-    output_clip_filename <- paste0("mapa_", var, "_", gsub("-", "_", estrato), "_clip.tif")
-    writeRaster(mapa_var_clip, output_clip_filename, overwrite = TRUE)
+    output_clip_filename <- paste0("map_", var, "_", gsub("-", "_", depth), "_clip.tif")
+    writeRaster(var_map_clip, output_clip_filename, overwrite = TRUE)
     
-    # Generar imagen PNG/JPG del raster recortado con ggplot2
-    df_raster <- as.data.frame(mapa_var_clip, xy = TRUE)
-    colnames(df_raster)[3] <- "Valor"
+    # Generate PNG/JPG map using ggplot2
+    df_raster <- as.data.frame(var_map_clip, xy = TRUE)
+    colnames(df_raster)[3] <- "Value"
     
-    # Etiqueta matemática como título (puedes usar subíndice o salto de línea)
-    etiqueta_titulo <- as.expression(substitute(e * "\n" * p, list(e = etiquetas[[var]], p = estrato)))
+    # Mathematical label as title
+    label_title <- as.expression(substitute(e * "\n" * d, list(e = labels[[var]], d = depth)))
     
-    p <- ggplot(df_raster, aes(x = x, y = y, fill = Valor)) +
+    p <- ggplot(df_raster, aes(x = x, y = y, fill = Value)) +
       geom_raster() +
       scale_fill_viridis(option = "D", na.value = "white") +
       coord_fixed() +
@@ -119,73 +112,72 @@ for (var in variables) {
         legend.position = "right",
         plot.title = element_text(size = 10, face = "bold", hjust = 0.5)
       ) +
-      ggtitle(etiqueta_titulo)
+      ggtitle(label_title)
     
-    # Guarda el archivo de imagen
-    ggsave(sprintf("mapa_%s_%s.png", var, gsub("-", "_", estrato)), p, width = 5, height = 3.75, dpi = 300)
+    # Save image file
+    ggsave(sprintf("map_%s_%s.png", var, gsub("-", "_", depth)), p, width = 5, height = 3.75, dpi = 300)
     
-    archivos_raster[[length(archivos_raster) + 1]] <- output_clip_filename
-    nombres_mapa[[length(nombres_mapa) + 1]] <- paste(var, estrato, sep = " - ")
+    raster_files[[length(raster_files) + 1]] <- output_clip_filename
+    map_names[[length(map_names) + 1]] <- paste(var, depth, sep = " - ")
   }
 }
 
+## 8. Edaphological Classification and Vectorization
 
-## **8. Clasificación Edafológica y Digitalización Vectorial**
-
-# Apilar rásteres recortados (cada banda representa una variable/estrato)
-stack <- rast(unlist(archivos_raster))
+# Stack clipped rasters (each band is a variable/depth)
+stack <- rast(unlist(raster_files))
 names(stack) <- variables
 
-# Leer shapefile de unidades edafológicas y simplificarlas
-unidades <- st_read("suelo_wgs84.shp")
-unidades_simple <- unidades %>%
+# Read soil units shapefile and simplify
+soil_units <- st_read("suelo_wgs84.shp")
+soil_units_simple <- soil_units %>%
   group_by(Grupo1) %>%
   summarise(geometry = st_union(geometry), .groups = "drop") %>%
   filter(!(Grupo1 %in% c("NA")))
 
-# Pila todos los raster, asegurando mismo extent/resolución
+# Stack alignment to DEM
 stack_aligned <- resample(stack, dem, method = "bilinear")
-stack_full <- c(stack_aligned, dem, pendiente)
+stack_full <- c(stack_aligned, dem, slope)
 
-# Convierte a tabla, pero NO elimina NAs
+# Convert to data frame, keep NAs
 pixel_data <- as.data.frame(stack_full, na.rm=FALSE)
 
-# Usar píxeles completos para clustering
+# Use complete pixels for clustering
 valid_rows <- complete.cases(pixel_data)
 set.seed(123)
-k=nrow(unidades_simple)
+k = nrow(soil_units_simple)
 
 kmeans_res <- kmeans(pixel_data[valid_rows, ], centers = k)
-# Asignar los clusters de vuelta como arriba
+# Assign clusters back to raster
 cluster_map <- rep(NA, nrow(pixel_data))
 cluster_map[valid_rows] <- kmeans_res$cluster
 r_class <- rast(stack_full, nlyr=1)
 values(r_class) <- cluster_map
 
-# SuavizadO
-r_class_smooth <- focal(r_class, w=9, fun=mean, na.policy="omit", na.rm=TRUE) #modificar w y fun
+# Smoothing
+r_class_smooth <- focal(r_class, w=9, fun=mean, na.policy="omit", na.rm=TRUE) # adjust w and fun as needed
 
-# Calcular mediana de cada polígono
-unidades_class <- as.polygons(r_class_smooth, dissolve = TRUE)
-medianas_shp <- extract(stack_full, unidades_class, fun = median, na.rm = TRUE)
-unidades_class <- cbind(unidades_class, medianas_shp[,-1])
+# Calculate median for each polygon
+units_class <- as.polygons(r_class_smooth, dissolve = TRUE)
+medians_shp <- extract(stack_full, units_class, fun = median, na.rm = TRUE)
+units_class <- cbind(units_class, medians_shp[,-1])
 
-# Relacionar cada unidad a base de datos de SWAT
+# Link each unit to SWAT database
 library(here)
 library(DBI)
 library(odbc)
 
-ruta_archivo <- here::here("SWAT2012.mdb")
+file_path <- here::here("SWAT2012.mdb")
 
 con <- dbConnect(
   odbc(),
   Driver = "Microsoft Access Driver (*.mdb, *.accdb)",
-  DBQ = ruta_archivo
+  DBQ = file_path
 )
 
 swat_df <- dbReadTable(con, "usersoil")
 
-swat_medianas <- swat_df %>%
+swat_medians <- swat_df %>%
   rowwise() %>%
   mutate(
     SOL_BD   = mean(c(SOL_BD1,   SOL_BD2),   na.rm = TRUE),
@@ -199,52 +191,45 @@ swat_medianas <- swat_df %>%
   ) %>%
   select(SEQN, SNAM, SOL_BD, SOL_AWC, SOL_K, SOL_CBN, SOL_CLAY, SOL_SILT, SOL_SAND, USLE_K)
 
-# Calcular distancias euclidianas para obtener tipo de suelo más parecido
+# Calculate Euclidean distances to assign most similar soil type
 
 library(purrr)
 
-# Extrae los atributos como data.frame
-df_unidades <- as.data.frame(unidades_class)
+# Extract attributes as data.frame
+df_units <- as.data.frame(units_class)
 
-# Ahora selecciona solo las columnas numéricas que necesitas
-df_unidades_num <- df_unidades[variables]
+# Select only numeric columns needed
+df_units_num <- df_units[variables]
 
-# Asegúrate que son numéricas
-df_unidades_num <- data.frame(lapply(df_unidades_num, function(x) as.numeric(as.character(x))))
+# Ensure numeric
+df_units_num <- data.frame(lapply(df_units_num, function(x) as.numeric(as.character(x))))
 
-# Ahora ya puedes usar as.matrix
-mat_unidades <- as.matrix(df_unidades_num)
+mat_units <- as.matrix(df_units_num)
+mat_swat <- as.matrix(swat_medians[variables])
 
-mat_swat <- as.matrix(swat_medianas[variables])
-
-closest_indices <- apply(mat_unidades, 1, function(x) {
+closest_indices <- apply(mat_units, 1, function(x) {
   dists <- apply(mat_swat, 1, function(y) sqrt(sum((x - y)^2)))
   which.min(dists)
 })
 
-# Asignar los suelos más parecidos
-df_unidades$SEQN_match <- swat_medianas$SEQN[closest_indices]
-df_unidades$SNAM_match <- swat_medianas$SNAM[closest_indices]
+# Assign most similar soils
+df_units$SEQN_match <- swat_medians$SEQN[closest_indices]
+df_units$SNAM_match <- swat_medians$SNAM[closest_indices]
 
-# Añadir los campos al SpatVector
-unidades_class$SEQN <- df_unidades$SEQN_match
-unidades_class$SNAM <- df_unidades$SNAM_match
-writeVector(unidades_class, "edafologia_SWAT.shp", overwrite=TRUE)
+# Add fields to SpatVector
+units_class$SEQN <- df_units$SEQN_match
+units_class$SNAM <- df_units$SNAM_match
+writeVector(units_class, "edafologia_SWAT.shp", overwrite=TRUE)
 
-# Pasar spatVector a raster
-library(terra)
-
+# Convert SpatVector to raster
 ref_raster <- dem
-r_seqn <- rasterize(unidades_class, ref_raster, field = "SEQN")
+r_seqn <- rasterize(units_class, ref_raster, field = "SEQN")
 writeRaster(r_seqn, "edafologia_SWAT_SEQN.tif", overwrite = TRUE)
 
-# Generar .txt (Lookup table)
-tabla_swat <- unique(data.frame(
-  Value = unidades_class$SEQN,
-  Name  = unidades_class$SNAM
+# Generate .txt lookup table
+swat_table <- unique(data.frame(
+  Value = units_class$SEQN,
+  Name  = units_class$SNAM
 ))
-
-tabla_swat <- tabla_swat[order(tabla_swat$Value), ]
-
-# Escribe el archivo
-write.table(tabla_swat, "SWAT_soil_table.txt", sep = ",", row.names = FALSE, col.names = TRUE, quote = TRUE)
+swat_table <- swat_table[order(swat_table$Value), ]
+write.table(swat_table, "SWAT_soil_table.txt", sep = ",", row.names = FALSE, col.names = TRUE, quote = TRUE)
