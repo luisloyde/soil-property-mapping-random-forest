@@ -25,7 +25,7 @@ data_sf <- st_as_sf(data, coords = c("X", "Y"), crs = 32614)
 
 ## 3. Load and Process DEM
 
-dem <- rast("dem_wgs84.tif")
+dem <- rast("dem.tif")
 crs(dem) <- "EPSG:4326" # Preferably reproject to WGS84
 
 ## 4. Derive Topographic Variables
@@ -36,7 +36,7 @@ topo_vars <- c(dem, slope)
 names(topo_vars) <- c("elevation", "slope")
 
 # Extract elevation and slope values for each sampling point
-extracted_vals <- extract(topo_vars, vect(data_sf))
+extracted_vals <- terra::extract(topo_vars, vect(data_sf))
 data <- cbind(data, extracted_vals)
 
 ## 5. Define Variables and Labels
@@ -129,7 +129,7 @@ stack <- rast(unlist(raster_files))
 names(stack) <- variables
 
 # Read soil units shapefile and simplify
-soil_units <- st_read("suelo_wgs84.shp")
+soil_units <- st_read("suelo.shp")
 soil_units_simple <- soil_units %>%
   group_by(Grupo1) %>%
   summarise(geometry = st_union(geometry), .groups = "drop") %>%
